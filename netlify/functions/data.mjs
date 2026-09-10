@@ -15,6 +15,7 @@
 
 import { getStore } from "@netlify/blobs";
 import nodemailer from "nodemailer";
+import { buildRoutingSlipPdf, buildTransmittalSlipPdf } from "./pdf-slips.mjs";
 
 const STORE_NAME = "canhs-dts";
 const FILES_STORE_NAME = "canhs-dts-files";
@@ -36,6 +37,7 @@ const TRANSMITTAL_ACTIONS = {
 // the Transmittal Slip's action checkboxes, plus "Others" for free text.
 const ACTION_NEEDED_OPTIONS = TRANSMITTAL_ACTIONS.col1.concat(TRANSMITTAL_ACTIONS.col2, TRANSMITTAL_ACTIONS.col3, ["Others"]);
 const TEMPLATE_CATEGORIES = ["DLL ILAW framework aligned", "BoW", "TOS", "Exam", "Monitoring and Evaluation Tools"];
+const SIGNATORY_CATEGORIES = ["Department Head", "Master Teacher", "SPC/Finance"];
 // Signatory directory for the Transmittal Slip — limited to 3 per category per school request.
 const PERSONNEL_SEED = [
   { name: "Gerald M. Flores", category: "Department Head" },
@@ -502,6 +504,38 @@ export default async (req, context) => {
 
       const data = await loadAll(store);
       return ok({ ok: true, data, id, results });
+    } else if (op === "generateSlipPdf") {
+      // Renders a real PDF (server-side, via pdf-lib) for either printable
+      // slip, saves it into the file repository (so it's there to download
+      // again later), and hands back the fileId so the browser can also
+      // trigger an immediate download of this copy.
+      const kind = body.kind;
+      const fileId = uid("file_");
+      let bytes, filename;
+      if (kind === "routingSlip") {
+        const d = documents[body.recordId];
+        if (!d) return err("Document not found");
+        bytes = await buildRoutingSlipPdf({ doc: d, schoolInfo, constants: { TRANSMITTAL_ACTIONS, ACTION_TAKEN_OPTIONS } });
+        filename = d.dtsNo + "_Routing-Slip.pdf";
+        await filesStore.set(fileId, Buffer.from(bytes), { metadata: { filename, mimeType: "application/pdf", size: bytes.length } });
+        d.generatedFiles = (d.generatedFiles || []).concat([{ fileId, filename, kind: "routingSlip", savedAt: nowIso(), savedBy: actorName(body.actorStaffId) }]);
+        await store.setJSON("documents", documents);
+      } else if (kind === "transmittalSlip") {
+        const t = transmittals[body.recordId];
+        if (!t) return err("Transmittal not found");
+        bytes = await buildTransmittalSlipPdf({
+          t, schoolInfo, constants: { TRANSMITTAL_ACTIONS, SIGNATORY_CATEGORIES },
+          personnelByCategory: (cat) => Object.values(personnel).filter((p) => p.category === cat)
+        });
+        filename = "Transmittal-Slip_" + (t.dtsNo || t.id) + ".pdf";
+        await filesStore.set(fileId, Buffer.from(bytes), { metadata: { filename, mimeType: "application/pdf", size: bytes.length } });
+        t.generatedFiles = (t.generatedFiles || []).concat([{ fileId, filename, kind: "transmittalSlip", savedAt: nowIso(), savedBy: actorName(body.actorStaffId) }]);
+        await store.setJSON("transmittals", transmittals);
+      } else {
+        return err("Unknown slip kind.");
+      }
+      const data = await loadAll(store);
+      return ok({ ok: true, data, fileId, filename });
     } else {
       return jsonResponse(400, { ok: false, error: "Unknown op" });
     }

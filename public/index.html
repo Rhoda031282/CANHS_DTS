@@ -304,8 +304,8 @@
   .recipient-tag{display:inline-flex; align-items:center; gap:5px; font-size:11.5px; background:var(--surface-2); border-radius:999px; padding:3px 9px; margin:2px 3px 0 0;}
   @media print{
     body *{visibility:hidden;}
-    #print-area, #print-area *{visibility:visible;}
-    #print-area{position:absolute; left:0; top:0; width:100%;}
+    .print-area, .print-area *{visibility:visible;}
+    .print-area{position:absolute; left:0; top:0; width:100%;}
   }
 </style>
 </head>
@@ -453,7 +453,7 @@
     session: null,
     showLogin: false, loginErr: "",
     trackQuery: "", trackResult: undefined,
-    detailId: null, transmittalId: null,
+    detailId: null, transmittalId: null, viewTransmittalSlipId: null,
     filters: { status:"", office:"", q:"" },
     accountMenuOpen: false,
     sidebarCollapsed: false,
@@ -557,7 +557,7 @@
       var notConfigured = (res.results||[]).some(function(r){return !r.sent && r.reason==="not_configured";});
       var msg = "Transmittal slip sent — "+delivered+" of "+total+" email(s) delivered."+(notConfigured?" (SMTP not configured on this site yet)":"");
       showToast(msg);
-      setState({ view:"transmittal" });
+      setState({ view:"transmittal", viewTransmittalSlipId: res.id||null });
       return res;
     }catch(e){ showToast("Couldn't reach the server — try again."); return null; }
   }
@@ -662,6 +662,26 @@
   }
   function initialsOf(name){
     return String(name||"").trim().split(/\s+/).map(function(w){return w[0];}).join("").toUpperCase().slice(0,4) || "NA";
+  }
+
+  /** Renders a real PDF for the given slip on the server, saves it into the
+   *  file repository, and triggers a browser download of that same copy. */
+  async function downloadSlipPdf(kind, recordId, btn){
+    var staff = currentStaff();
+    var origLabel = btn ? btn.textContent : "";
+    if(btn){ btn.disabled = true; btn.textContent = "Preparing PDF…"; }
+    try{
+      var res = await apiPost("generateSlipPdf", { kind:kind, recordId:recordId, actorStaffId: staff?staff.id:"" });
+      if(!res.ok){ showToast(res.error||"Couldn't generate the PDF — try again."); return; }
+      applyData(res.data);
+      var a = document.createElement("a");
+      a.href = downloadUrl(res.fileId, res.filename);
+      a.target = "_blank"; a.rel = "noopener";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      showToast("PDF downloaded and saved to the file repository.");
+      render();
+    }catch(e){ showToast("Couldn't reach the server — try again."); }
+    finally{ if(btn){ btn.disabled = false; btn.textContent = origLabel; } }
   }
 
   function runTrack(q){
@@ -787,14 +807,79 @@
     return '<div class="overlay" data-act="close-transmittal">'+
       '<div class="modal modal-xwide" onclick="event.stopPropagation()">'+
         '<div class="modal-head"><h3 style="font-size:16px;">Submission and Routing Slip</h3><button class="x-btn" data-act="close-transmittal">×</button></div>'+
-        '<div id="print-area">'+
+        '<div class="print-area">'+
           routingSlipCopyHtml(d, false)+
           '<div class="cut-line">✂ cut here — bottom copy is the claim stub</div>'+
           routingSlipCopyHtml(d, true)+
         '</div>'+
-        '<div style="display:flex; gap:10px; margin-top:16px;">'+
-          '<button class="btn btn-primary" data-act="print-transmittal">Print</button>'+
+        '<div class="hint" style="margin-top:10px;">Choose <strong>Download PDF</strong> to save a PDF copy to this device and to the app\'s file repository, or <strong>Print</strong> to send it straight to a printer.</div>'+
+        '<div style="display:flex; gap:10px; margin-top:10px; flex-wrap:wrap;">'+
+          '<button class="btn btn-primary" data-act="download-routing-pdf" data-id="'+esc(d.id)+'">⬇ Download PDF</button>'+
+          '<button class="btn" data-act="print-transmittal">🖨 Print</button>'+
           '<button class="btn" data-act="close-transmittal">Close</button>'+
+        '</div>'+
+      '</div></div>';
+  }
+
+  /* ============ transmittal slip (printable) ============ */
+  function transmittalSlipCopyHtml(t){
+    var info = mem.schoolInfo;
+    function box(on){ return '<span class="rs-box'+(on?' on':'')+'">'+(on?'✓':'')+'</span>'; }
+    var letterhead = '<div class="rs-letterhead">'+
+        '<div class="country">Republic of the Philippines</div>'+
+        '<div class="dept">Department of Education</div>'+
+        '<div class="sch">'+esc(info.schoolId||"")+' - '+esc(info.schoolName||"Castor Alviar National High School")+'</div>'+
+      '</div>';
+    var titleBlock = '<div class="rs-title">TRANSMITTAL SLIP</div>';
+    var fields =
+      '<div class="rs-field-row"><div><span class="lab">Date:</span> '+fmtDate(t.date||t.sentAt)+'</div>'+(t.dtsNo?('<div><span class="lab">DTS No.:</span> <span class="mono">'+esc(t.dtsNo)+'</span></div>'):'')+'</div>'+
+      '<div class="rs-field-row"><div style="flex:2 1 100%;"><span class="lab">Document Title:</span> '+esc(t.title)+'</div></div>';
+
+    var recipientIds = {}; (t.recipients||[]).forEach(function(r){ if(r.id) recipientIds[r.id]=true; });
+    var othersNames = (t.recipients||[]).filter(function(r){return !r.id;}).map(function(r){return r.name;});
+    function sigCheckCol(category){
+      var people = personnelByCategory(category);
+      return (people.map(function(p){ return '<div class="rs-check">'+box(!!recipientIds[p.id])+'<span>'+esc(p.name)+'</span></div>'; }).join("")) || '<div class="hint">None on file.</div>';
+    }
+    var destChecks = '<div class="rs-checks">'+SIGNATORY_CATEGORIES.map(function(cat){
+      return '<div><div style="font-weight:700; font-size:11px; margin-bottom:4px;">'+esc(cat)+'</div>'+sigCheckCol(cat)+'</div>';
+    }).join("")+'</div>';
+    var othersLine = othersNames.length ? ('<div class="rs-field-row"><div><span class="lab">Others:</span> '+esc(othersNames.join(", "))+'</div></div>') : '';
+    var destSection = '<div class="rs-section-title">Destination</div>'+destChecks+othersLine;
+
+    var checkedActions = t.actionsToBeTaken||[];
+    function actCol(list){ return list.map(function(a){ return '<div class="rs-check">'+box(checkedActions.indexOf(a)>=0)+'<span>'+esc(a)+'</span></div>'; }).join(""); }
+    var actionChecks = '<div class="rs-checks">'+
+      '<div>'+actCol(TRANSMITTAL_ACTIONS.col1)+'</div>'+
+      '<div>'+actCol(TRANSMITTAL_ACTIONS.col2)+'</div>'+
+      '<div>'+actCol(TRANSMITTAL_ACTIONS.col3)+
+        '<div class="rs-check">'+box(!!t.actionOtherText)+'<span>For appropriate action: '+(t.actionOtherText?esc(t.actionOtherText):"__________")+'</span></div>'+
+      '</div>'+
+    '</div>';
+    var actionSection = '<div class="rs-section-title">Action to be taken</div>'+actionChecks;
+
+    var remarksSection = t.remarks ? ('<div class="rs-section-title">Remarks</div><div style="margin-bottom:10px;">'+esc(t.remarks)+'</div>') : '';
+    var fileLine = t.fileName ? ('<div class="rs-field-row"><div><span class="lab">Attachment:</span> '+esc(t.fileName)+'</div></div>') : '';
+    var sigBlock = '<div style="margin-top:26px; display:flex; justify-content:flex-end;">'+
+      '<div style="text-align:center;"><div style="border-top:1px solid #333; padding-top:4px; min-width:220px;"><strong>'+esc(t.principalName||info.principalName||"")+'</strong></div><div class="hint">'+esc(t.principalTitle||info.principalTitle||"")+'</div></div>'+
+    '</div>';
+
+    return '<div class="routing-slip">'+letterhead+titleBlock+fields+destSection+actionSection+remarksSection+fileLine+sigBlock+'</div>';
+  }
+
+  function transmittalSlipModal(){
+    if(!state.viewTransmittalSlipId) return "";
+    var t = mem.transmittals[state.viewTransmittalSlipId];
+    if(!t) return "";
+    return '<div class="overlay" data-act="close-transmittal-slip">'+
+      '<div class="modal modal-xwide" onclick="event.stopPropagation()">'+
+        '<div class="modal-head"><h3 style="font-size:16px;">Transmittal Slip</h3><button class="x-btn" data-act="close-transmittal-slip">×</button></div>'+
+        '<div class="print-area">'+transmittalSlipCopyHtml(t)+'</div>'+
+        '<div class="hint" style="margin-top:10px;">Choose <strong>Download PDF</strong> to save a PDF copy to this device and to the app\'s file repository, or <strong>Print</strong> to send it straight to a printer.</div>'+
+        '<div style="display:flex; gap:10px; margin-top:10px; flex-wrap:wrap;">'+
+          '<button class="btn btn-primary" data-act="download-transmittal-pdf" data-id="'+esc(t.id)+'">⬇ Download PDF</button>'+
+          '<button class="btn" data-act="print-transmittal-slip">🖨 Print</button>'+
+          '<button class="btn" data-act="close-transmittal-slip">Close</button>'+
         '</div>'+
       '</div></div>';
   }
@@ -944,16 +1029,34 @@
   function fileGroupLabel(iso){ if(!iso) return "Undated"; var d=new Date(iso); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
 
   function viewSendRepository(){
-    var withFiles = documentsArr().filter(function(d){ return d.fileId || d.fileLink; });
-    if(!withFiles.length) return '<p class="empty">No files have been uploaded with a document yet.</p>';
-    var groups = {};
-    withFiles.forEach(function(d){ var k=fileGroupLabel(d.createdAt); (groups[k]=groups[k]||[]).push(d); });
-    var keys = Object.keys(groups).sort().reverse();
-    return keys.map(function(k){
-      var items = groups[k].map(function(d){
+    // Combines three sources into one date-grouped repository: files uploaded
+    // with an online submission, and PDFs generated (and auto-saved here) from
+    // the "Download PDF" button on either the Routing Slip or the Transmittal Slip.
+    var entries = [];
+    documentsArr().forEach(function(d){
+      if(d.fileId || d.fileLink){
         var link = d.fileId ? ('<a href="'+esc(downloadUrl(d.fileId, d.fileDisplayName||d.dtsNo))+'" target="_blank" rel="noopener">'+esc(d.fileDisplayName||d.dtsNo)+'</a>')
           : ('<a href="'+esc(d.fileLink)+'" target="_blank" rel="noopener">'+esc(d.fileLink)+'</a>');
-        return '<div class="list-manage"><span class="mono">'+esc(d.dtsNo)+'</span> — '+esc(d.title)+'<br>'+link+'</div>';
+        entries.push({ date:d.createdAt, dtsNo:d.dtsNo, title:d.title, tag:"Submitted file", link:link });
+      }
+      (d.generatedFiles||[]).forEach(function(gf){
+        entries.push({ date: gf.savedAt, dtsNo:d.dtsNo, title:d.title, tag:"Routing Slip PDF",
+          link:'<a href="'+esc(downloadUrl(gf.fileId, gf.filename))+'" target="_blank" rel="noopener">'+esc(gf.filename)+'</a>' });
+      });
+    });
+    transmittalsArr().forEach(function(t){
+      (t.generatedFiles||[]).forEach(function(gf){
+        entries.push({ date: gf.savedAt, dtsNo: t.dtsNo||"", title: t.title||"Transmittal Slip", tag:"Transmittal Slip PDF",
+          link:'<a href="'+esc(downloadUrl(gf.fileId, gf.filename))+'" target="_blank" rel="noopener">'+esc(gf.filename)+'</a>' });
+      });
+    });
+    if(!entries.length) return '<p class="empty">No files have been uploaded or generated yet.</p>';
+    var groups = {};
+    entries.forEach(function(e){ var k=fileGroupLabel(e.date); (groups[k]=groups[k]||[]).push(e); });
+    var keys = Object.keys(groups).sort().reverse();
+    return keys.map(function(k){
+      var items = groups[k].map(function(e){
+        return '<div class="list-manage"><span class="mono">'+esc(e.dtsNo||"—")+'</span> — '+esc(e.title||"")+' <span class="hint">('+esc(e.tag)+')</span><br>'+e.link+'</div>';
       }).join("");
       return '<details class="repo-folder" open><summary>📁 '+esc(k)+' <span class="hint">('+groups[k].length+')</span></summary>'+items+'</details>';
     }).join("");
@@ -1155,6 +1258,7 @@
         (t.dtsNo?('<div class="hint mono">DTS '+esc(t.dtsNo)+'</div>'):'')+
         '<div style="margin-top:6px;">'+tags+'</div>'+
         (t.fileName?('<div class="hint" style="margin-top:4px;">Attachment: '+esc(t.fileName)+'</div>'):'')+
+        '<div style="margin-top:8px;"><button type="button" class="btn btn-sm" data-act="view-transmittal-slip" data-id="'+esc(t.id)+'">View / print slip</button></div>'+
       '</div>';
     }).join("") || '<p class="empty">No transmittal slips sent yet.</p>';
 
@@ -1298,7 +1402,7 @@
 
     return topBannerHtml("Document Tracking System")+
       '<div class="shell">'+sidebar+main+'</div>'+
-      docDetailModal()+submittedHistoryModal()+transmittalModal()+
+      docDetailModal()+submittedHistoryModal()+transmittalModal()+transmittalSlipModal()+
       (state.toast?'<div class="toast">'+esc(state.toast)+'</div>':'');
   }
 
@@ -1331,6 +1435,11 @@
     app.querySelectorAll('[data-act="view-transmittal"]').forEach(function(el){ el.addEventListener("click", function(){ setState({ transmittalId: el.getAttribute("data-id"), detailId:null }); }); });
     app.querySelectorAll('[data-act="close-transmittal"]').forEach(function(el){ el.addEventListener("click", function(e){ if(e.target===el || e.currentTarget===el) setState({ transmittalId:null }); }); });
     app.querySelectorAll('[data-act="print-transmittal"]').forEach(function(el){ el.addEventListener("click", function(){ window.print(); }); });
+    app.querySelectorAll('[data-act="download-routing-pdf"]').forEach(function(el){ el.addEventListener("click", function(){ downloadSlipPdf("routingSlip", el.getAttribute("data-id"), el); }); });
+    app.querySelectorAll('[data-act="view-transmittal-slip"]').forEach(function(el){ el.addEventListener("click", function(){ setState({ viewTransmittalSlipId: el.getAttribute("data-id") }); }); });
+    app.querySelectorAll('[data-act="close-transmittal-slip"]').forEach(function(el){ el.addEventListener("click", function(e){ if(e.target===el || e.currentTarget===el) setState({ viewTransmittalSlipId:null }); }); });
+    app.querySelectorAll('[data-act="print-transmittal-slip"]').forEach(function(el){ el.addEventListener("click", function(){ window.print(); }); });
+    app.querySelectorAll('[data-act="download-transmittal-pdf"]').forEach(function(el){ el.addEventListener("click", function(){ downloadSlipPdf("transmittalSlip", el.getAttribute("data-id"), el); }); });
 
     app.querySelectorAll('[data-act="chip"]').forEach(function(el){ el.addEventListener("click", function(){ runTrack(el.getAttribute("data-track")); }); });
     app.querySelectorAll('[data-act="del-office"]').forEach(function(el){ el.addEventListener("click", function(){ removeOffice(el.getAttribute("data-id")); }); });
