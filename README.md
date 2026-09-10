@@ -15,7 +15,7 @@ below — and the rest of the system works normally even if you never set them u
 This folder is a complete Netlify site:
 
 - `public/index.html` — the whole application (one page, no build step).
-- `netlify/functions/data.js` — the backend. It stores all data in **Netlify Blobs**
+- `netlify/functions/data.mjs` — the backend. It stores all data in **Netlify Blobs**
   (a small database included free with every Netlify site — nothing else to sign up for)
   and sends the email/SMS notifications described below.
 - `netlify.toml` / `package.json` — tell Netlify how to build and run it.
@@ -53,7 +53,13 @@ one person can manage deploys.
 - Once logged in, open **Offices & Staff** to add your real staff accounts and PINs,
   update the office list, fill in the school's real address/contact info, and set the
   **Principal's name and title** (used on the printed slips and the Transmittal Slip's
-  signature line) — then use **Clear sample records** to remove the four demo documents.
+  signature line).
+- A freshly deployed site starts **completely empty** — no sample or demo documents are
+  seeded. The first document anyone submits becomes the first real record.
+- **Tracking / Document Control Number** format is **`CANHS-yyyy-mm-001`** — a running
+  number that starts fresh at `001` on the 1st of every month (e.g. `CANHS-2026-09-001`,
+  `CANHS-2026-09-002`, …, then `CANHS-2026-10-001` on October 1st). It's generated
+  automatically; nothing to configure.
 - **Submit Documents** now matches the school's actual paper form: Document Owner,
   Contact No., Email Address, No. of folder/box/envelope, No. of pages, Document Type,
   Title, Destination, Action Needed (with an "Others" box for a custom action), and
@@ -75,7 +81,7 @@ one person can manage deploys.
 - Each signatory category (Department Head, Master Teacher, SPC/Finance) is seeded with the
   school's first three names in that role, matching the school's own limit of three
   signatories per category. To change who appears there later, ask for the personnel list
-  to be updated in the code (`PERSONNEL_SEED` in `netlify/functions/data.js`) and redeploy —
+  to be updated in the code (`PERSONNEL_SEED` in `netlify/functions/data.mjs`) and redeploy —
   there's no in-app editor for the signatory directory yet.
 
 ## Turning on email and SMS notifications
@@ -133,6 +139,26 @@ affected.
 - **Email/SMS notifications need the environment variables above.** Until they're set,
   every send is skipped (not queued or retried) and reported as "not configured" so staff
   know to follow up manually in the meantime.
+
+## Troubleshooting: "Couldn't reach the server" / staff login doesn't work
+
+If the site itself loads but logging in or submitting a document fails, the most common
+causes, in order of likelihood:
+
+1. **Project visibility is set to Private.** Site configuration → General → Visitor access.
+   Set Production visibility to **Public** — otherwise Netlify blocks every visitor (staff
+   included) before your own login screen ever runs.
+2. **The repository structure doesn't match what Netlify expects.** `netlify.toml` says the
+   site lives in `public/` and the backend function lives in `netlify/functions/` — if a
+   browser upload flattened those folders (a common GitHub web-upload issue), Netlify can't
+   find them. Check the repo on GitHub: you should see actual `public` and `netlify` folders,
+   not loose files with the same names sitting at the top level.
+3. **`MissingBlobsEnvironmentError` in the function logs** (Site → Logs → Functions → `data`).
+   Netlify's automatic Netlify Blobs wiring is only reliable for functions written in the
+   modern "v2" format (an ES module with `export default async (req, context) => {...}`,
+   file extension `.mjs`) — the older `exports.handler = (event) => {...}` style can throw
+   this error even when everything else is configured correctly. `netlify/functions/data.mjs`
+   in this project already uses the v2 format specifically to avoid this.
 
 ## Updating the site later
 
