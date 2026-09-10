@@ -68,9 +68,16 @@ one person can manage deploys.
   and a bottom copy labelled **CLAIM STUB** for the person following up, separated by a
   cut line.
 - Forwarding a document or updating its status now also lets you check off the
-  **Action Taken** (reviewed/approved, reviewed/for revision, incomplete attachment/return
-  to owner, noted/for filing, or a custom note) that appears in the slip's Routing Details
-  table — exactly like the checkboxes on the paper form.
+  **Action Taken** (reviewed/approved, reviewed/for revision, noted/for filing) that
+  appears in the slip's Routing Details table — exactly like the checkboxes on the
+  paper form.
+- Both the **Submission and Routing Slip** and the **Transmittal Slip** windows have two
+  buttons: **Download PDF**, which renders a real PDF on the server, downloads it to
+  your device, and automatically saves a copy in **Send Documents → File Repository**
+  so it can be found again later; and **Print**, which sends the on-screen slip straight
+  to a printer without creating a file. PDF generation uses the `pdf-lib` package —
+  Netlify installs it automatically on deploy along with everything else, nothing to
+  configure.
 - **Transmittal Slip** (visible to admin accounts) is for sending something from the
   Office of the Principal to specific personnel: tick the Department Head, Master Teacher,
   and/or SPC/Finance signatories (or fill in "Others"), tick the action(s) to be taken,
