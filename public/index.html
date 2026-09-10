@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Castor Alviar DTS</title>
+<title>CANHS-DTS</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600;700&family=Source+Serif+4:wght@600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
   :root{
@@ -123,12 +123,20 @@
     background:var(--surface); color:var(--ink); font:inherit; font-size:13.5px;
   }
   textarea{resize:vertical; min-height:64px;}
-  .field{margin-bottom:14px;}
+  .field{margin-bottom:14px; text-align:left;}
+  .field label{text-align:left;}
   .row{display:grid; gap:14px;}
   .row-2{grid-template-columns:1fr 1fr;}
   .row-3{grid-template-columns:1fr 1fr 1fr;}
   @media (max-width:640px){.row-2,.row-3{grid-template-columns:1fr;}}
   .hint{font-size:12px; color:var(--ink-faint); margin-top:5px;}
+
+  .tab-bar{display:flex; gap:6px; border-bottom:1px solid var(--border); margin:14px 0 18px;}
+  .tab-btn{background:none; border:none; border-bottom:2px solid transparent; padding:9px 4px; margin-right:14px; font-size:13.5px; font-weight:600; color:var(--ink-muted); border-radius:0;}
+  .tab-btn.active{color:var(--navy); border-bottom-color:var(--navy);}
+  .repo-folder{border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-bottom:10px; background:var(--surface-2);}
+  .repo-folder summary{cursor:pointer; font-weight:600; font-size:13.5px;}
+  .repo-folder .list-manage{display:block; padding:8px 0;}
 
   .card{background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:22px; box-shadow:var(--shadow);}
   .card + .card{margin-top:18px;}
@@ -316,14 +324,18 @@
     "Pending":"pill-pending","In Process":"pill-process","On Hold":"pill-hold",
     "Released / Completed":"pill-good","Returned / Disapproved":"pill-bad"
   };
-  var ACTION_NEEDED_OPTIONS = ["For signature/approval","For review/comment","For filing","For recommendation","Others"];
-  var ACTION_TAKEN_OPTIONS = ["reviewed/approved","reviewed/for revision","incomplete attachment/return to owner","noted/for filing"];
+  var ACTION_TAKEN_OPTIONS = ["reviewed and approved","reviewed, need revision","noted, for filing"];
   var TRANSMITTAL_ACTIONS = {
     col1: ["Congratulations!","Thanks for your effort","Let us discuss","For submission/DTS","For filing","For dissemination"],
     col2: ["For your information","For comment","For checking","For signature","For compliance","For implementation"],
     col3: ["Please give an update","Please draft a reply","Please prepare response","Please review/recommend","Please prepare indorsement"]
   };
-  var SUBMISSION_TYPES = ["Hard Copy","Soft Copy"];
+  // The "Action Needed" dropdown on Send Documents uses the same options as the
+  // Transmittal Slip's action checkboxes (per the school's reference list), plus
+  // "Others" for "For appropriate action: ______" free text.
+  var ACTION_NEEDED_OPTIONS = TRANSMITTAL_ACTIONS.col1.concat(TRANSMITTAL_ACTIONS.col2, TRANSMITTAL_ACTIONS.col3, ["Others"]);
+  var SUBMISSION_TYPES = ["Online","Hardcopy"];
+  var TEMPLATE_CATEGORIES = ["DLL ILAW framework aligned","BoW","TOS","Exam","Monitoring and Evaluation Tools"];
   var DEFAULT_OFFICES = [
     "Office of the School Principal","Office of the Assistant Principal","Registrar's Office",
     "Guidance Office","Records / Administrative Office","Property & Supply Office",
@@ -361,7 +373,7 @@
   }
 
   /* ============ in-memory fallback state ============ */
-  var mem = { offices:{}, staff:{}, documents:{}, messages:{}, personnel:{}, transmittals:{}, schoolInfo:{
+  var mem = { offices:{}, staff:{}, documents:{}, messages:{}, personnel:{}, transmittals:{}, requests:{}, templates:{}, schoolInfo:{
     schoolId:"301527", schoolName:"Castor Alviar National High School",
     address:"Masili, Calamba City, Laguna", contact:"", email:"",
     principalName:"Rhoda O. Dela Cruz", principalTitle:"School Principal"
@@ -392,6 +404,16 @@
   function personnelArr(){ return Object.values(mem.personnel); }
   function personnelByCategory(cat){ return personnelArr().filter(function(p){return p.category===cat;}); }
   function transmittalsArr(){ return Object.values(mem.transmittals).sort(function(a,b){ return new Date(b.sentAt||b.date)-new Date(a.sentAt||a.date); }); }
+  function requestsArr(){ return Object.values(mem.requests).sort(function(a,b){ return new Date(b.createdAt)-new Date(a.createdAt); }); }
+  function templatesArr(){ return Object.values(mem.templates).sort(function(a,b){ return new Date(b.uploadedAt)-new Date(a.uploadedAt); }); }
+  function recentActivityArr(){
+    var items = [];
+    documentsArr().forEach(function(d){
+      (d.history||[]).forEach(function(h){ items.push({ dtsNo:d.dtsNo, docId:d.id, title:d.title, label:h.label, status:h.status, byStaffName:h.byStaffName, remarks:h.remarks, at:h.at }); });
+    });
+    items.sort(function(a,b){ return new Date(b.at)-new Date(a.at); });
+    return items;
+  }
 
   async function apiGet(){
     var res = await fetch(API_BASE, { headers:{ "Accept":"application/json" } });
@@ -412,6 +434,8 @@
     mem.messages = data.messages || {};
     mem.personnel = data.personnel || {};
     mem.transmittals = data.transmittals || {};
+    mem.requests = data.requests || {};
+    mem.templates = data.templates || {};
     mem.schoolInfo = data.schoolInfo || mem.schoolInfo;
   }
   async function loadAndRender(){
@@ -425,16 +449,18 @@
 
   /* ============ app state ============ */
   var state = {
-    view: "track", // pre-login: "track"; post-login: "dashboard","messages","submit","status","admin"
+    view: "track", // pre-login: "track"; post-login: "dashboard","recentActivity","messages","send","requests","templates","transmittal","admin"
     session: null,
     showLogin: false, loginErr: "",
     trackQuery: "", trackResult: undefined,
     detailId: null, transmittalId: null,
     filters: { status:"", office:"", q:"" },
-    statusSubOpen: true,
     accountMenuOpen: false,
     sidebarCollapsed: false,
     messagesPage: 1,
+    activityPage: 1,
+    sendTab: "new",
+    respondRequestId: null,
     toast: null
   };
   try{ var saved = localStorage.getItem("canhs_dts_session"); if(saved) state.session = JSON.parse(saved); }catch(e){}
@@ -591,6 +617,53 @@
     }catch(e){ showToast("Couldn't reach the server — try again."); }
   }
 
+  /* ============ Request Documents ============ */
+  async function addRequest(payload){
+    var staff = currentStaff();
+    try{
+      var res = await apiPost("addRequest", { payload:payload, actorStaffId: staff.id });
+      if(!res.ok){ showToast(res.error||"Couldn't send the request — try again."); return; }
+      applyData(res.data);
+      showToast("Request sent to "+officeName(payload.fromOfficeId)+".");
+      render();
+    }catch(e){ showToast("Couldn't reach the server — try again."); }
+  }
+  async function respondToRequest(id, note, fileId){
+    var staff = currentStaff();
+    try{
+      var res = await apiPost("respondRequest", { id:id, note:note, fileId:fileId||"", actorStaffId: staff.id });
+      if(!res.ok){ showToast(res.error||"Couldn't save — try again."); return; }
+      applyData(res.data);
+      showToast("Marked fulfilled.");
+      setState({ respondRequestId:null });
+    }catch(e){ showToast("Couldn't reach the server — try again."); }
+  }
+
+  /* ============ Downloadable Forms and Templates ============ */
+  async function addTemplate(payload){
+    var staff = currentStaff();
+    try{
+      var res = await apiPost("addTemplate", { payload:payload, actorStaffId: staff.id });
+      if(!res.ok){ showToast(res.error||"Couldn't upload — try again."); return; }
+      applyData(res.data);
+      showToast("Uploaded.");
+      render();
+    }catch(e){ showToast("Couldn't reach the server — try again."); }
+  }
+  async function removeTemplate(id){
+    try{
+      var res = await apiPost("removeTemplate", { id:id });
+      if(res.ok) applyData(res.data); else showToast(res.error||"Couldn't remove — try again.");
+      render();
+    }catch(e){ showToast("Couldn't reach the server — try again."); }
+  }
+  function downloadUrl(fileId, filename){
+    return API_BASE + "?op=downloadFile&fileId=" + encodeURIComponent(fileId) + "&name=" + encodeURIComponent(filename||"file");
+  }
+  function initialsOf(name){
+    return String(name||"").trim().split(/\s+/).map(function(w){return w[0];}).join("").toUpperCase().slice(0,4) || "NA";
+  }
+
   function runTrack(q){
     var query = (q||"").trim().toUpperCase();
     if(!query){ setState({ trackResult:undefined, trackQuery:"" }); return; }
@@ -624,6 +697,8 @@
         '<div class="meta-item"><div class="k">Current office</div><div class="v">'+esc(d.destinationOfficeName||officeName(d.destinationOfficeId))+'</div></div>'+
         '<div class="meta-item"><div class="k">Logged</div><div class="v">'+fmtDate(d.createdAt)+'</div></div>'+
         '<div class="meta-item"><div class="k">Last update</div><div class="v">'+fmtDate(d.updatedAt)+'</div></div>'+
+        (d.fileId?('<div class="meta-item"><div class="k">File</div><div class="v"><a href="'+esc(downloadUrl(d.fileId, d.fileDisplayName||d.dtsNo))+'" target="_blank" rel="noopener">'+esc(d.fileDisplayName||"download")+'</a></div></div>'):"")+
+        (!d.fileId && d.fileLink?('<div class="meta-item"><div class="k">Link</div><div class="v"><a href="'+esc(d.fileLink)+'" target="_blank" rel="noopener">open link</a></div></div>'):"")+
       '</div>'+
       '<h3 style="font-size:13.5px; margin-bottom:10px;">Routing history</h3>'+timelineHtml(d.history);
   }
@@ -656,32 +731,51 @@
       '<div class="rs-field-row"><div><span class="lab">Destination:</span> '+esc(d.destinationOfficeName)+'</div></div>'+
       '<div class="rs-field-row"><div><span class="lab">No. of folder/box/envelope:</span> '+esc(d.foldersBoxes||"—")+'</div><div><span class="lab">No. of pages:</span> '+esc(d.numPages||"—")+'</div></div>';
 
-    var checkOpts = ["For signature/approval","For review/comment","For filing","For recommendation"];
     function box(on){ return '<span class="rs-box'+(on?' on':'')+'">'+(on?'✓':'')+'</span>'; }
+    function checkCol(list){ return list.map(function(c){ return '<div class="rs-check">'+box(d.actionNeeded===c)+'<span>'+esc(c)+'</span></div>'; }).join(""); }
     var checks = '<div class="rs-checks">'+
-      checkOpts.map(function(c){ return '<div class="rs-check">'+box(d.actionNeeded===c)+'<span>'+esc(c)+'</span></div>'; }).join("")+
-      '<div class="rs-check">'+box(d.actionNeeded==="Others")+'<span>Others: '+(d.actionNeeded==="Others"?esc(d.actionOtherText||""):"__________")+'</span></div>'+
+      '<div>'+checkCol(TRANSMITTAL_ACTIONS.col1)+'</div>'+
+      '<div>'+checkCol(TRANSMITTAL_ACTIONS.col2)+'</div>'+
+      '<div>'+checkCol(TRANSMITTAL_ACTIONS.col3)+
+        '<div class="rs-check">'+box(d.actionNeeded==="Others")+'<span>For appropriate action: '+(d.actionNeeded==="Others"?esc(d.actionOtherText||""):"__________")+'</span></div>'+
+      '</div>'+
     '</div>';
     var checkSection = '<div class="rs-section-title">Please check the appropriate action</div>'+checks;
 
     var hist = d.history||[];
-    var rowsHtml = "";
-    for(var i=0;i<5;i++){
-      var h = hist[i];
-      if(!h){
-        rowsHtml += '<tr><td>'+(i+1)+'</td><td class="rs-blank">—</td><td class="rs-blank">—</td><td class="rs-blank">—</td><td>'+(i===0?'Forwarded to<br>_______________________':actionTakenListHtml([],"",""))+'</td><td class="rs-blank">—</td></tr>';
-      }else{
-        var dt = new Date(h.at);
-        var timeStr = dt.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"});
-        var actionCell = i===0
-          ? ('Forwarded to<br><strong>'+esc(h.officeName||"")+'</strong>'+(h.remarks?('<div style="margin-top:3px;">"'+esc(h.remarks)+'"</div>'):''))
-          : actionTakenListHtml(h.actionTaken, h.actionOther, h.remarks);
-        rowsHtml += '<tr><td>'+(i+1)+'</td><td>'+esc(h.officeName||"")+'</td><td>'+fmtDate(h.at)+'</td><td>'+timeStr+'</td><td>'+actionCell+'</td><td><i>'+esc(h.byStaffName||"")+'</i></td></tr>';
+    var tableSection;
+    if(stub){
+      // Claim stub's second copy is labelled "Acknowledgement of Receipt" on the
+      // school's paper form — a simpler log of who received it and when, no
+      // action-taken detail (that stays on the office's own top copy).
+      var stubRows = "";
+      for(var j=0;j<5;j++){
+        var hs = hist[j];
+        stubRows += hs
+          ? ('<tr><td>'+(j+1)+'</td><td>'+esc(hs.officeName||"")+'</td><td>'+fmtDate(hs.at)+'</td><td></td></tr>')
+          : ('<tr><td>'+(j+1)+'</td><td class="rs-blank">—</td><td class="rs-blank">—</td><td></td></tr>');
       }
+      tableSection = '<div class="rs-section-title">Acknowledgement of Receipt</div>'+
+        '<table class="rs-table"><thead><tr><th>No.</th><th>Received by</th><th>Date received</th><th>Signature</th></tr></thead><tbody>'+stubRows+'</tbody></table>';
+    } else {
+      var rowsHtml = "";
+      for(var i=0;i<5;i++){
+        var h = hist[i];
+        if(!h){
+          rowsHtml += '<tr><td>'+(i+1)+'</td><td class="rs-blank">—</td><td class="rs-blank">—</td><td class="rs-blank">—</td><td>'+(i===0?'Forwarded to<br>_______________________':actionTakenListHtml([],"",""))+'</td><td class="rs-blank">—</td></tr>';
+        }else{
+          var dt = new Date(h.at);
+          var timeStr = dt.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"});
+          var actionCell = i===0
+            ? ('Forwarded to<br><strong>'+esc(h.officeName||"")+'</strong>'+(h.remarks?('<div style="margin-top:3px;">"'+esc(h.remarks)+'"</div>'):''))
+            : actionTakenListHtml(h.actionTaken, h.actionOther, h.remarks);
+          rowsHtml += '<tr><td>'+(i+1)+'</td><td>'+esc(h.officeName||"")+'</td><td>'+fmtDate(h.at)+'</td><td>'+timeStr+'</td><td>'+actionCell+'</td><td><i>'+esc(h.byStaffName||"")+'</i></td></tr>';
+        }
+      }
+      tableSection = '<div class="rs-section-title">Action Taken</div>'+
+        '<table class="rs-table"><thead><tr><th>No.</th><th>Received by</th><th>Date received</th><th>Time received</th><th>Action taken / remarks</th><th>Signature</th></tr></thead><tbody>'+rowsHtml+'</tbody></table>'+
+        (hist.length>5?('<div class="hint" style="margin-top:4px;">Showing the first 5 of '+hist.length+' routing actions — full history is on the document detail screen.</div>'):'');
     }
-    var tableSection = '<div class="rs-section-title">Routing Details</div>'+
-      '<table class="rs-table"><thead><tr><th>No.</th><th>Received by</th><th>Date received</th><th>Time received</th><th>Action taken / remarks</th><th>Signature</th></tr></thead><tbody>'+rowsHtml+'</tbody></table>'+
-      (hist.length>5?('<div class="hint" style="margin-top:4px;">Showing the first 5 of '+hist.length+' routing actions — full history is on the document detail screen.</div>'):'');
 
     return '<div class="routing-slip">'+letterhead+titleBlock+fields+checkSection+tableSection+'</div>';
   }
@@ -765,8 +859,9 @@
         '<div class="card"><div class="card-title">Documents by office</div><div class="card-desc">Where documents currently sit.</div>'+officeBars+'</div>'+
         '<div class="card"><div class="card-title">Quick actions</div><div class="card-desc">Common tasks for records staff.</div>'+
           '<div style="display:flex; flex-direction:column; gap:10px;">'+
-            '<button class="btn btn-primary" data-act="goto" data-view="submit">+ Submit a new document</button>'+
-            '<button class="btn" data-act="goto" data-view="status">View document status</button>'+
+            '<button class="btn btn-primary" data-act="goto" data-view="send">+ Send a new document</button>'+
+            '<button class="btn" data-act="goto" data-view="recentActivity">View recent activity</button>'+
+            '<button class="btn" data-act="goto" data-view="requests">Request a document</button>'+
             (isAdmin()?'<button class="btn" data-act="goto" data-view="admin">Manage offices &amp; staff</button>':'')+
           '</div>'+
         '</div>'+
@@ -803,19 +898,26 @@
     '</div>';
   }
 
-  function viewSubmit(){
+  function tabBarHtml(tabs, activeKey, act){
+    return '<div class="tab-bar">'+tabs.map(function(t){
+      return '<button class="tab-btn '+(t.key===activeKey?"active":"")+'" data-act="'+act+'" data-tab="'+t.key+'">'+esc(t.label)+'</button>';
+    }).join("")+'</div>';
+  }
+
+  function ownerSelectHtml(){
+    var opts = personnelArr().map(function(p){ return '<option value="'+esc(p.name)+'">'+esc(p.name)+' ('+esc(p.category)+')</option>'; }).join("");
+    return '<select name="documentOwnerSelect" id="doc-owner-select">'+opts+'<option value="__other__">Others (type name)…</option></select>';
+  }
+
+  function viewSendNew(){
     var officeOpts = officesArr().map(function(o){ return '<option value="'+o.id+'">'+esc(o.name)+'</option>'; }).join("");
     var actionOpts = ACTION_NEEDED_OPTIONS.map(function(a){return '<option>'+esc(a)+'</option>';}).join("");
     var subOpts = SUBMISSION_TYPES.map(function(a){return '<option>'+esc(a)+'</option>';}).join("");
-    return '<div class="card">'+
-      '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">'+
-        '<div><div class="card-title">📄 Submit Documents</div><div class="card-desc">A Document Control Number is generated automatically and a Submission and Routing Slip is produced once you submit.</div></div>'+
-        '<button class="btn btn-sm" data-act="open-history">⏱ Submitted History &gt;&gt;</button>'+
-      '</div>'+
-      '<form id="submit-doc-form">'+
+    return '<form id="submit-doc-form">'+
         '<div class="row row-3">'+
-          '<div class="field"><label>Document Owner *</label><input name="documentOwner" placeholder="Document Owner" required></div>'+
-          '<div class="field"><label>Contact No. *</label><input name="contactNo" placeholder="Contact No. (for SMS updates)" required></div>'+
+          '<div class="field"><label>Document Owner *</label>'+ownerSelectHtml()+
+            '<input name="documentOwnerOther" id="doc-owner-other" placeholder="Type the document owner\'s name" style="display:none; margin-top:8px;"></div>'+
+          '<div class="field"><label>Mobile No. *</label><input name="contactNo" placeholder="Mobile No. (for SMS updates)" required></div>'+
           '<div class="field"><label>Email Address *</label><input type="email" name="email" placeholder="Email Address (for email updates)" required></div>'+
         '</div>'+
         '<div class="row row-2">'+
@@ -829,10 +931,42 @@
           '<div class="field"><label>Action Needed: *</label><select name="actionNeeded" id="action-needed-select">'+actionOpts+'</select></div>'+
           '<div class="field"><label>Submission Type: *</label><select name="submissionType" id="submission-type">'+subOpts+'</select></div>'+
         '</div>'+
-        '<div class="field" id="action-other-field" style="display:none;"><label>Please specify</label><input name="actionOtherText" placeholder="Describe the action needed"></div>'+
-        '<div class="field" id="file-link-field" style="display:none;"><label>File / Link</label><input name="fileLink" placeholder="Paste a link to the soft copy (optional)"></div>'+
-        '<button class="btn btn-primary" type="submit" style="background:#1fae6e;border-color:#1fae6e;">→ Submit</button>'+
-      '</form>'+
+        '<div class="field" id="action-other-field" style="display:none;"><label>Please specify</label><input name="actionOtherText" placeholder="For appropriate action — please specify"></div>'+
+        '<div class="field" id="file-upload-field" style="display:none;">'+
+          '<label>Upload file (online submission)</label><input type="file" name="docFile" id="submit-doc-file">'+
+          '<div class="hint" style="margin-top:4px;">Saved to the file repository, named with the tracking number automatically once submitted.</div>'+
+        '</div>'+
+        '<div class="field" id="file-link-field" style="display:none;"><label>Or paste a link instead (optional)</label><input name="fileLink" placeholder="Link to the soft copy"></div>'+
+        '<button class="btn btn-primary" type="submit" style="background:#1fae6e;border-color:#1fae6e;">→ Send</button>'+
+      '</form>';
+  }
+
+  function fileGroupLabel(iso){ if(!iso) return "Undated"; var d=new Date(iso); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+
+  function viewSendRepository(){
+    var withFiles = documentsArr().filter(function(d){ return d.fileId || d.fileLink; });
+    if(!withFiles.length) return '<p class="empty">No files have been uploaded with a document yet.</p>';
+    var groups = {};
+    withFiles.forEach(function(d){ var k=fileGroupLabel(d.createdAt); (groups[k]=groups[k]||[]).push(d); });
+    var keys = Object.keys(groups).sort().reverse();
+    return keys.map(function(k){
+      var items = groups[k].map(function(d){
+        var link = d.fileId ? ('<a href="'+esc(downloadUrl(d.fileId, d.fileDisplayName||d.dtsNo))+'" target="_blank" rel="noopener">'+esc(d.fileDisplayName||d.dtsNo)+'</a>')
+          : ('<a href="'+esc(d.fileLink)+'" target="_blank" rel="noopener">'+esc(d.fileLink)+'</a>');
+        return '<div class="list-manage"><span class="mono">'+esc(d.dtsNo)+'</span> — '+esc(d.title)+'<br>'+link+'</div>';
+      }).join("");
+      return '<details class="repo-folder" open><summary>📁 '+esc(k)+' <span class="hint">('+groups[k].length+')</span></summary>'+items+'</details>';
+    }).join("");
+  }
+
+  function viewSend(){
+    return '<div class="card">'+
+      '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">'+
+        '<div><div class="card-title">📤 Send Documents</div><div class="card-desc">A Document Control Number is generated automatically and a Submission and Routing Slip is produced once you send.</div></div>'+
+        '<button class="btn btn-sm" data-act="open-history">⏱ Submitted History &gt;&gt;</button>'+
+      '</div>'+
+      tabBarHtml([{key:"new",label:"New Submission"},{key:"repository",label:"File Repository"}], state.sendTab, "send-tab")+
+      (state.sendTab==="repository" ? viewSendRepository() : viewSendNew())+
     '</div>';
   }
 
@@ -841,7 +975,8 @@
     var q = (state.historyQuery||"").trim().toLowerCase();
     var docs = documentsArr().filter(function(d){ return !q || d.dtsNo.toLowerCase().indexOf(q)>=0 || d.title.toLowerCase().indexOf(q)>=0; });
     var rows = docs.map(function(d){
-      return '<tr><td>'+fmtDateTime(d.createdAt)+'</td><td class="mono">'+esc(d.dtsNo)+'</td><td>'+esc(d.title)+'</td><td>'+esc(d.actionNeeded)+'</td><td>'+esc(d.submissionType)+'</td><td>'+(d.fileLink?('<a href="'+esc(d.fileLink)+'" target="_blank" rel="noopener">link</a>'):'---')+'</td><td>'+esc(d.destinationOfficeName)+'</td>'+
+      var fileCell = d.fileId ? ('<a href="'+esc(downloadUrl(d.fileId, d.fileDisplayName||d.dtsNo))+'" target="_blank" rel="noopener">file</a>') : (d.fileLink?('<a href="'+esc(d.fileLink)+'" target="_blank" rel="noopener">link</a>'):'---');
+      return '<tr><td>'+fmtDateTime(d.createdAt)+'</td><td class="mono">'+esc(d.dtsNo)+'</td><td>'+esc(d.title)+'</td><td>'+esc(d.actionNeeded)+'</td><td>'+esc(d.submissionType)+'</td><td>'+fileCell+'</td><td>'+esc(d.destinationOfficeName)+'</td>'+
       '<td><button class="icon-btn" title="View transmittal form" data-act="view-transmittal" data-id="'+d.id+'">≡</button></td></tr>';
     }).join("") || '<tr><td colspan="7" class="empty">No submissions yet.</td></tr>';
 
@@ -854,35 +989,98 @@
       '</div></div>';
   }
 
-  function viewStatus(){
-    var docs = documentsArr().filter(function(d){
-      if(state.filters.status && d.status!==state.filters.status) return false;
-      if(state.filters.office && d.destinationOfficeId!==state.filters.office) return false;
-      if(state.filters.q){ var q=state.filters.q.toLowerCase(); if(d.dtsNo.toLowerCase().indexOf(q)<0 && d.title.toLowerCase().indexOf(q)<0) return false; }
-      return true;
-    });
-    var statusOpts = '<option value="">All statuses</option>'+STATUSES.map(function(s){return '<option '+(state.filters.status===s?"selected":"")+' value="'+esc(s)+'">'+esc(s)+'</option>';}).join("");
-    var officeOpts = '<option value="">All offices</option>'+officesArr().map(function(o){return '<option '+(state.filters.office===o.id?"selected":"")+' value="'+o.id+'">'+esc(o.name)+'</option>';}).join("");
-    var rows = docs.map(function(d){
-      return '<tr class="clickable" data-act="open-doc" data-id="'+d.id+'">'+
-        '<td class="mono">'+esc(d.dtsNo)+'</td>'+
-        '<td>'+esc(d.title)+(d.sample?' <span class="badge-sample">Sample</span>':"")+'</td>'+
-        '<td>'+esc(d.docType)+'</td>'+
-        '<td>'+esc(d.destinationOfficeName||officeName(d.destinationOfficeId))+'</td>'+
-        '<td>'+pill(d.status)+'</td>'+
-        '<td>'+fmtDate(d.updatedAt)+'</td>'+
+  function viewRecentActivity(){
+    var pageSize = 15;
+    var all = recentActivityArr();
+    var totalPages = Math.max(1, Math.ceil(all.length/pageSize));
+    var page = Math.min(state.activityPage, totalPages);
+    var pageItems = all.slice((page-1)*pageSize, page*pageSize);
+    var rows = pageItems.map(function(item){
+      return '<tr class="clickable" data-act="open-doc" data-id="'+esc(item.docId)+'">'+
+        '<td class="mono">'+esc(item.dtsNo)+'</td><td>'+esc(item.title)+'</td><td>'+esc(item.label)+'</td><td>'+pill(item.status)+'</td><td>'+esc(item.byStaffName||"")+'</td><td>'+fmtDateTime(item.at)+'</td>'+
       '</tr>';
-    }).join("") || '<tr><td colspan="6" class="empty">No documents match these filters.</td></tr>';
+    }).join("") || '<tr><td colspan="6" class="empty">No activity yet.</td></tr>';
+    var pager = '<div class="pagination">'+
+      '<button data-act="activity-page" data-page="1" '+(page===1?"disabled":"")+'>&lt;&lt; First</button>'+
+      '<button data-act="activity-page" data-page="'+(page-1)+'" '+(page===1?"disabled":"")+'>Prev</button>'+
+      '<button class="active">'+page+'</button>'+
+      '<button data-act="activity-page" data-page="'+(page+1)+'" '+(page===totalPages?"disabled":"")+'>Next</button>'+
+      '<button data-act="activity-page" data-page="'+totalPages+'" '+(page===totalPages?"disabled":"")+'>Last &gt;&gt;</button>'+
+    '</div>';
+    return '<div class="card">'+
+      '<div class="card-title">🕘 Recent Activity</div><div class="card-desc">Every routing action across all documents, most recent first.</div>'+
+      '<div class="table-wrap"><table><thead><tr><th>DTS No.</th><th>Title</th><th>Action</th><th>Status</th><th>By</th><th>When</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+      pager+
+    '</div>';
+  }
+
+  function viewRequests(){
+    var officeOpts = officesArr().map(function(o){ return '<option value="'+o.id+'">'+esc(o.name)+'</option>'; }).join("");
+    var all = requestsArr();
+    var rows = all.map(function(r){
+      var respondOpen = state.respondRequestId===r.id;
+      var respondBlock = respondOpen ? (
+        '<form class="respond-request-form" data-act-form="respond-request" data-id="'+r.id+'" style="margin-top:10px; border-top:1px solid var(--border); padding-top:10px;">'+
+          '<div class="field"><label>Response note</label><textarea name="note" placeholder="What you\'re sending back / any remarks" required></textarea></div>'+
+          '<div class="field"><label>Attach a file (optional)</label><input type="file" name="responseFile"></div>'+
+          '<button class="btn btn-sm btn-primary" type="submit">Mark fulfilled</button> '+
+          '<button class="btn btn-sm" type="button" data-act="cancel-respond-request">Cancel</button>'+
+        '</form>'
+      ) : "";
+      return '<div class="transmittal-list-item">'+
+        '<div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;"><strong>'+esc(r.title)+'</strong><span class="'+(r.status==="Fulfilled"?"pill pill-good":"pill pill-pending")+'">'+esc(r.status)+'</span></div>'+
+        '<div class="hint">Requested from <strong>'+esc(r.fromOfficeName)+'</strong> by '+esc(r.requestedByName)+' · '+fmtDateTime(r.createdAt)+'</div>'+
+        (r.note?('<div style="margin-top:4px;">'+esc(r.note)+'</div>'):'')+
+        (r.status==="Fulfilled" ? (
+          '<div class="hint" style="margin-top:6px;">Fulfilled '+fmtDateTime(r.respondedAt)+(r.responseNote?(': "'+esc(r.responseNote)+'"'):'')+
+          (r.responseFileId?(' — <a href="'+esc(downloadUrl(r.responseFileId, r.responseFilename))+'" target="_blank" rel="noopener">download file</a>'):'')+'</div>'
+        ) : (
+          '<div style="margin-top:8px;">'+(respondOpen?'':'<button class="btn btn-sm" data-act="open-respond-request" data-id="'+r.id+'">Respond &amp; mark fulfilled</button>')+'</div>'+respondBlock
+        ))+
+      '</div>';
+    }).join("") || '<p class="empty">No requests yet.</p>';
 
     return '<div class="card">'+
-      '<div class="card-title">🗓 Document Status</div><div class="card-desc">'+docs.length+' of '+documentsArr().length+' documents shown.</div>'+
-      '<div class="filters">'+
-        '<input placeholder="Search DTS No. or title" id="doc-search" value="'+esc(state.filters.q)+'">'+
-        '<select id="filter-status">'+statusOpts+'</select>'+
-        '<select id="filter-office">'+officeOpts+'</select>'+
-      '</div>'+
-      '<div class="table-wrap"><table><thead><tr><th>DTS No.</th><th>Title</th><th>Type</th><th>Current office</th><th>Status</th><th>Updated</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
-    '</div>';
+      '<div class="card-title">📨 Request Documents</div><div class="card-desc">Ask another office for a document. They\'ll see it here and can respond with a note or file.</div>'+
+      '<form id="request-doc-form">'+
+        '<div class="row row-2">'+
+          '<div class="field"><label>Request from office *</label><select name="fromOfficeId">'+officeOpts+'</select></div>'+
+          '<div class="field"><label>Document / title being requested *</label><input name="title" placeholder="e.g. Copy of DepEd Order No. 010, s. 2026" required></div>'+
+        '</div>'+
+        '<div class="field"><label>Note</label><textarea name="note" placeholder="Any details that help the other office find it (optional)"></textarea></div>'+
+        '<button class="btn btn-primary" type="submit">Send Request</button>'+
+      '</form>'+
+    '</div>'+
+    '<div class="card"><div class="card-title">All requests</div>'+rows+'</div>';
+  }
+
+  function templateCategoryHtml(cat){
+    var items = templatesArr().filter(function(t){return t.category===cat;});
+    var rows = items.map(function(t){
+      return '<div class="list-manage"><span>'+esc(t.title)+' <span class="hint">— uploaded by '+esc(t.uploadedBy)+', '+fmtDate(t.uploadedAt)+'</span></span>'+
+        '<span style="display:flex; gap:8px;">'+
+          '<a class="btn btn-sm" href="'+esc(downloadUrl(t.fileId, t.filename))+'" target="_blank" rel="noopener">Download</a>'+
+          (isAdmin()?('<button class="btn btn-sm btn-danger" data-act="del-template" data-id="'+t.id+'">Remove</button>'):'')+
+        '</span></div>';
+    }).join("") || '<p class="hint">Nothing uploaded here yet.</p>';
+    return '<div class="card"><div class="card-title">'+esc(cat)+'</div>'+rows+'</div>';
+  }
+
+  function viewTemplates(){
+    var catOpts = TEMPLATE_CATEGORIES.map(function(c){return '<option>'+esc(c)+'</option>';}).join("");
+    return '<div class="card">'+
+      '<div class="card-title">🗂 Downloadable (Forms and Templates)</div>'+
+      '<div class="card-desc">Download a blank template, fill it in your own Word/Excel, and — if you\'d like to share the finished copy — upload it back here.</div>'+
+      '<form id="add-template-form">'+
+        '<div class="row row-3">'+
+          '<div class="field"><label>Category *</label><select name="category">'+catOpts+'</select></div>'+
+          '<div class="field"><label>Title *</label><input name="title" placeholder="e.g. Daily Lesson Log — Grade 7 Science" required></div>'+
+          '<div class="field"><label>File *</label><input type="file" name="templateFile" required></div>'+
+        '</div>'+
+        '<button class="btn btn-sm btn-primary" type="submit">Upload</button>'+
+      '</form>'+
+    '</div>'+
+    TEMPLATE_CATEGORIES.map(templateCategoryHtml).join("");
   }
 
   function viewAdmin(){
@@ -1044,20 +1242,16 @@
   }
 
   function sectionLabel(view){
-    return { dashboard:"Dashboard", messages:"Messages", submit:"Submit Documents", status:"Document Status", transmittal:"Transmittal Slip", admin:"Offices & Staff" }[view] || "Dashboard";
+    return { dashboard:"Dashboard", recentActivity:"Recent Activity", messages:"Messages", send:"Send Documents", requests:"Request Documents", templates:"Downloadable (Forms and Templates)", transmittal:"Transmittal Slip", admin:"Offices & Staff" }[view] || "Dashboard";
   }
 
   function renderLoggedIn(){
     var s = currentStaff();
     var unread = messagesArr().filter(function(m){return !m.read;}).length;
+    var openRequests = requestsArr().filter(function(r){return r.status!=="Fulfilled";}).length;
     var navItem = function(view, icon, label, badge){
       return '<button class="snav-item '+(state.view===view?"active":"")+'" data-act="goto" data-view="'+view+'"><span class="ic">'+icon+'</span><span class="label">'+label+'</span>'+(badge?'<span class="snav-badge">'+badge+'</span>':'')+'</button>';
     };
-    var statusSub = ["All"].concat(STATUSES).map(function(st){
-      var val = st==="All" ? "" : st;
-      var activeHere = state.view==="status" && (state.filters.status||"")===val;
-      return '<button class="'+(activeHere?"active":"")+'" data-act="status-filter" data-status="'+esc(val)+'">'+esc(st)+'</button>';
-    }).join("");
 
     var sidebar =
       '<div class="sidebar '+(state.sidebarCollapsed?"collapsed":"")+'">'+
@@ -1065,13 +1259,14 @@
         '<div class="sidebar-profile"><div class="avatar-circle"><svg width="30" height="30" viewBox="0 0 24 24" fill="'+"#0b3d6e"+'"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7"/></svg></div>'+
           '<div class="who-text"><div class="name">'+esc(s.name)+'</div><div class="title">'+esc(s.title||officeName(s.officeId))+'</div></div>'+
         '</div>'+
-        '<div class="sidebar-brand"><div class="logo-dot">DTS</div><div class="txt"><div class="t1">DTS V1.0</div><div class="t2">Document Tracking System v1.0</div></div></div>'+
+        '<div class="sidebar-brand"><div class="logo-dot">CD</div><div class="txt"><div class="t1">CANHS-DTS V1.0</div><div class="t2">Document Tracking System v1.0</div></div></div>'+
         '<div class="sidebar-nav">'+
           navItem("dashboard","◈","Dashboard")+
+          navItem("recentActivity","🕘","Recent Activity")+
           navItem("messages","✉","Messages", unread||null)+
-          navItem("submit","📄","Submit Documents")+
-          '<button class="snav-item '+(state.view==="status"?"active":"")+'" data-act="toggle-status-sub"><span class="ic">🗓</span><span class="label">Document Status</span><span class="snav-chev '+(state.statusSubOpen?"open":"")+'">&#8250;</span></button>'+
-          (state.statusSubOpen?('<div class="snav-sub">'+statusSub+'</div>'):'')+
+          navItem("send","📤","Send Documents")+
+          navItem("requests","📨","Request Documents", openRequests||null)+
+          navItem("templates","🗂","Downloadable (Forms and Templates)")+
           (isAdmin()?navItem("transmittal","✉","Transmittal Slip"):'')+
           (isAdmin()?navItem("admin","⚙","Offices & Staff"):'')+
         '</div>'+
@@ -1080,8 +1275,10 @@
 
     var body;
     if(state.view==="messages") body = viewMessages();
-    else if(state.view==="submit") body = viewSubmit();
-    else if(state.view==="status") body = viewStatus();
+    else if(state.view==="recentActivity") body = viewRecentActivity();
+    else if(state.view==="send") body = viewSend();
+    else if(state.view==="requests") body = viewRequests();
+    else if(state.view==="templates") body = viewTemplates();
     else if(state.view==="transmittal" && isAdmin()) body = viewTransmittal();
     else if(state.view==="admin" && isAdmin()) body = viewAdmin();
     else body = viewDashboard();
@@ -1095,7 +1292,7 @@
             (state.accountMenuOpen ? '<div class="account-menu"><button data-act="goto" data-view="admin">Account settings</button><button data-act="logout">Log out</button></div>' : '')+
           '</div>'+
         '</div>'+
-        '<div class="crumbline">DTS v1.0 &nbsp;|&nbsp; '+sectionLabel(state.view)+'</div>'+
+        '<div class="crumbline">CANHS-DTS v1.0 &nbsp;|&nbsp; '+sectionLabel(state.view)+'</div>'+
         '<div class="content">'+body+'</div>'+
       '</div>';
 
@@ -1121,8 +1318,8 @@
     app.querySelectorAll('[data-act="logout"]').forEach(function(el){ el.addEventListener("click", doLogout); });
     app.querySelectorAll('[data-act="toggle-account"]').forEach(function(el){ el.addEventListener("click", function(){ setState({ accountMenuOpen: !state.accountMenuOpen }); }); });
     app.querySelectorAll('[data-act="toggle-sidebar"]').forEach(function(el){ el.addEventListener("click", function(){ setState({ sidebarCollapsed: !state.sidebarCollapsed }); }); });
-    app.querySelectorAll('[data-act="toggle-status-sub"]').forEach(function(el){ el.addEventListener("click", function(){ if(state.view!=="status"){ setState({ view:"status", statusSubOpen:true }); } else { setState({ statusSubOpen: !state.statusSubOpen }); } }); });
-    app.querySelectorAll('[data-act="status-filter"]').forEach(function(el){ el.addEventListener("click", function(){ state.filters.status = el.getAttribute("data-status"); setState({ view:"status" }); }); });
+    app.querySelectorAll('[data-act="send-tab"]').forEach(function(el){ el.addEventListener("click", function(){ setState({ sendTab: el.getAttribute("data-tab") }); }); });
+    app.querySelectorAll('[data-act="activity-page"]').forEach(function(el){ el.addEventListener("click", function(){ setState({ activityPage: parseInt(el.getAttribute("data-page"),10) }); }); });
 
     app.querySelectorAll('[data-act="open-doc"]').forEach(function(el){ el.addEventListener("click", function(){ setState({ detailId: el.getAttribute("data-id") }); }); });
     app.querySelectorAll('[data-act="close-detail"]').forEach(function(el){ el.addEventListener("click", function(){ setState({ detailId:null }); }); });
@@ -1149,23 +1346,49 @@
     var submitForm = document.getElementById("submit-doc-form");
     if(submitForm){
       var subTypeSel = document.getElementById("submission-type");
-      var fileField = document.getElementById("file-link-field");
-      function syncFileField(){ fileField.style.display = subTypeSel.value==="Soft Copy" ? "block" : "none"; }
-      if(subTypeSel){ subTypeSel.addEventListener("change", syncFileField); syncFileField(); }
+      var uploadField = document.getElementById("file-upload-field");
+      var linkField = document.getElementById("file-link-field");
+      function syncFileFields(){
+        var online = subTypeSel.value==="Online";
+        uploadField.style.display = online ? "block" : "none";
+        linkField.style.display = online ? "block" : "none";
+      }
+      if(subTypeSel){ subTypeSel.addEventListener("change", syncFileFields); syncFileFields(); }
       var actionSel = document.getElementById("action-needed-select");
       var actionOtherField = document.getElementById("action-other-field");
       function syncActionOther(){ actionOtherField.style.display = actionSel.value==="Others" ? "block" : "none"; }
       if(actionSel){ actionSel.addEventListener("change", syncActionOther); syncActionOther(); }
-      submitForm.addEventListener("submit", function(e){
+      var ownerSel = document.getElementById("doc-owner-select");
+      var ownerOther = document.getElementById("doc-owner-other");
+      function syncOwnerOther(){ var other = ownerSel.value==="__other__"; ownerOther.style.display = other?"block":"none"; ownerOther.required = other; }
+      if(ownerSel){ ownerSel.addEventListener("change", syncOwnerOther); syncOwnerOther(); }
+      submitForm.addEventListener("submit", async function(e){
         e.preventDefault();
         var fd = new FormData(submitForm);
-        submitNewDocument({
-          documentOwner: fd.get("documentOwner"), contactNo: fd.get("contactNo"), email: fd.get("email"),
-          foldersBoxes: fd.get("foldersBoxes"), numPages: fd.get("numPages"), docType: fd.get("docType"), title: fd.get("title"),
-          destinationOfficeId: fd.get("destinationOfficeId"), actionNeeded: fd.get("actionNeeded"), actionOtherText: fd.get("actionOtherText"),
-          submissionType: fd.get("submissionType"), fileLink: fd.get("fileLink")
-        });
-        submitForm.reset();
+        var documentOwner = ownerSel.value==="__other__" ? (fd.get("documentOwnerOther")||"").trim() : ownerSel.value;
+        if(!documentOwner){ showToast("Enter the document owner's name."); return; }
+        var submitBtn = submitForm.querySelector('button[type="submit"]');
+        var origLabel = submitBtn ? submitBtn.textContent : "";
+        if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = "Sending…"; }
+        try{
+          var fileId = "";
+          var docFileInput = document.getElementById("submit-doc-file");
+          if(docFileInput && docFileInput.files && docFileInput.files[0]){
+            var up = await uploadFile(docFileInput.files[0]);
+            fileId = up.fileId;
+          }
+          await submitNewDocument({
+            documentOwner: documentOwner, contactNo: fd.get("contactNo"), email: fd.get("email"),
+            foldersBoxes: fd.get("foldersBoxes"), numPages: fd.get("numPages"), docType: fd.get("docType"), title: fd.get("title"),
+            destinationOfficeId: fd.get("destinationOfficeId"), actionNeeded: fd.get("actionNeeded"), actionOtherText: fd.get("actionOtherText"),
+            submissionType: fd.get("submissionType"), fileLink: fd.get("fileLink"), fileId: fileId
+          });
+          submitForm.reset();
+        }catch(err){
+          showToast((err && err.message) || "Couldn't send — try again.");
+        } finally {
+          if(submitBtn){ submitBtn.disabled = false; submitBtn.textContent = origLabel; }
+        }
       });
     }
 
@@ -1175,12 +1398,52 @@
     if(msgSearch) msgSearch.addEventListener("input", function(){ state.filters.q = msgSearch.value; state.messagesPage = 1; render(); });
     app.querySelectorAll('[data-act="msg-page"]').forEach(function(el){ el.addEventListener("click", function(){ setState({ messagesPage: parseInt(el.getAttribute("data-page"),10) }); }); });
 
-    var docSearch = document.getElementById("doc-search");
-    if(docSearch) docSearch.addEventListener("input", function(){ state.filters.q = docSearch.value; render(); });
-    var filterStatus = document.getElementById("filter-status");
-    if(filterStatus) filterStatus.addEventListener("change", function(){ state.filters.status = filterStatus.value; render(); });
-    var filterOffice = document.getElementById("filter-office");
-    if(filterOffice) filterOffice.addEventListener("change", function(){ state.filters.office = filterOffice.value; render(); });
+    var requestForm = document.getElementById("request-doc-form");
+    if(requestForm) requestForm.addEventListener("submit", function(e){
+      e.preventDefault();
+      var fd = new FormData(requestForm);
+      addRequest({ fromOfficeId: fd.get("fromOfficeId"), title: fd.get("title"), note: fd.get("note") });
+      requestForm.reset();
+    });
+    app.querySelectorAll('[data-act="open-respond-request"]').forEach(function(el){ el.addEventListener("click", function(){ setState({ respondRequestId: el.getAttribute("data-id") }); }); });
+    app.querySelectorAll('[data-act="cancel-respond-request"]').forEach(function(el){ el.addEventListener("click", function(){ setState({ respondRequestId: null }); }); });
+    var respondForm = app.querySelector('form[data-act-form="respond-request"]');
+    if(respondForm) respondForm.addEventListener("submit", async function(e){
+      e.preventDefault();
+      var fd = new FormData(respondForm);
+      var id = respondForm.getAttribute("data-id");
+      var submitBtn = respondForm.querySelector('button[type="submit"]');
+      if(submitBtn) submitBtn.disabled = true;
+      try{
+        var fileId = "";
+        var fInput = respondForm.querySelector('input[name="responseFile"]');
+        if(fInput && fInput.files && fInput.files[0]){ var up = await uploadFile(fInput.files[0]); fileId = up.fileId; }
+        await respondToRequest(id, fd.get("note"), fileId);
+      }catch(err){
+        showToast((err && err.message) || "Couldn't send — try again.");
+        if(submitBtn) submitBtn.disabled = false;
+      }
+    });
+
+    var addTemplateForm = document.getElementById("add-template-form");
+    if(addTemplateForm) addTemplateForm.addEventListener("submit", async function(e){
+      e.preventDefault();
+      var fd = new FormData(addTemplateForm);
+      var fInput = addTemplateForm.querySelector('input[name="templateFile"]');
+      if(!fInput || !fInput.files || !fInput.files[0]){ showToast("Choose a file to upload."); return; }
+      var submitBtn = addTemplateForm.querySelector('button[type="submit"]');
+      if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = "Uploading…"; }
+      try{
+        var up = await uploadFile(fInput.files[0]);
+        await addTemplate({ category: fd.get("category"), title: fd.get("title"), fileId: up.fileId, filename: up.filename });
+        addTemplateForm.reset();
+      }catch(err){
+        showToast((err && err.message) || "Couldn't upload — try again.");
+      } finally {
+        if(submitBtn){ submitBtn.disabled = false; submitBtn.textContent = "Upload"; }
+      }
+    });
+    app.querySelectorAll('[data-act="del-template"]').forEach(function(el){ el.addEventListener("click", function(){ removeTemplate(el.getAttribute("data-id")); }); });
 
     var forwardForm = document.getElementById("forward-form");
     if(forwardForm) forwardForm.addEventListener("submit", function(e){
