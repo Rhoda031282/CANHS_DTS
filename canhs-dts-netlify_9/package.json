@@ -1,0 +1,11 @@
+{
+  "name": "canhs-dts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Castor Alviar National High School Document Tracking System",
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0",
+    "nodemailer": "^6.9.15",
+    "pdf-lib": "^1.17.1"
+  }
+}
